@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Multiplayer Game</title>
+  <style>
+    #chatBox {
+      border: 1px solid black;
+      height: 200px;
+      overflow-y: auto;
+      margin-bottom: 10px;
+    }
+    #menu {
+      margin-bottom: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div id="menu">
+    <h2>Multiplayer Game</h2>
+    <input type="text" id="roomInput" placeholder="Enter Room ID to join">
+    <button id="joinRoomBtn">Join Room</button>
+    <button id="createRoomBtn">Create New Room</button>
+  </div>
+  
+  <div id="playerCount">Players connected: 0</div>
+  <div id="roomIdDisplay">Room ID: None</div>
+  <input type="text" id="chatInput" placeholder="Type your message...">
+
+  <!-- Load Phaser library -->
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3"></script>
+  <script src="/socket.io/socket.io.js"></script>
+
+  <script>
+    class MenuScene extends Phaser.Scene {
+      constructor() {
+        super({ key: 'MenuScene' });
+      }
+
+      create() {
+        this.socket = io();
+
+        const createRoomBtn = document.getElementById('createRoomBtn');
+        const joinRoomBtn = document.getElementById('joinRoomBtn');
+        const roomInput = document.getElementById('roomInput');
+
+        createRoomBtn.addEventListener('click', () => {
+          this.socket.emit('createRoom');
+        });
+
+        joinRoomBtn.addEventListener('click', () => {
+          const roomId = roomInput.value.trim();
+          if (roomId) {
+            this.socket.emit('joinRoom', roomId);
+          }
+        });
+
+        this.socket.on('roomJoined', (roomId) => {
+          document.getElementById('roomIdDisplay').innerText = `Room ID: ${roomId}`;
+          this.scene.start('GameScene', { socket: this.socket, roomId: roomId });
+        });
+
+        this.socket.on('roomNotFound', (roomId) => {
+          alert(`Room ID ${roomId} not found.`);
+        });
+
+        this.socket.on('playerLimitReached', () => {
+          alert("Cannot create or join room: player limit reached.");
+        });
+
+        this.socket.on('playerCountUpdated', (count) => {
+          document.getElementById('playerCount').innerText = `Players connected: ${count}`;
+        });
+      }
+    }
+
+    class GameScene extends Phaser.Scene {
+      constructor() {
+        super({ key: 'GameScene' });
+      }
+
+      init(data) {
+        this.socket = data.socket;
+        this.roomId = data.roomId;
+        this.otherPlayers = {};
+      }
+
+      preload() {
+        this.load.spritesheet('player', 'Player.png', { frameWidth: 32, frameHeight: 32 });
+      }
+
+      create() {
+        // Create the player sprite when the player joins the room
+        this.player = this.physics.add.sprite(400, 300, 'player');
+
+        this.cursors = this.input.keyboard.createCursorKeys();
+
+        // Emit to the server that the player has joined and set their position
+        this.socket.emit('playerMoved', { position: { x: this.player.x, y: this.player.y } });
+
+        // Listen for other players
+        this.socket.on('currentPlayers', (players) => {
+          Object.keys(players).forEach((playerId) => {
+            if (playerId === this.socket.id) {
+              this.player.setPosition(players[playerId].x, players[playerId].y);
+            } else {
+              this.addOtherPlayer(players[playerId], playerId);
+            }
+          });
+          this.updatePlayerCount(Object.keys(players).length);
+        });
+
+        this.socket.on('playerMoved', (data) => {
+          const { playerId, position } = data;
+          if (!this.otherPlayers[playerId]) {
+            this.addOtherPlayer(position, playerId);
+          } else {
+            const otherPlayer = this.otherPlayers[playerId];
+            otherPlayer.setPosition(position.x, position.y);
+          }
+        });
+
+        this.socket.on('disconnect', () => {
+          Object.values(this.otherPlayers).forEach((otherPlayer) => otherPlayer.destroy());
+          this.otherPlayers = {};
+          this.updatePlayerCount(0);
+        });
+      }
+
+      update() {
+        if (this.player && this.cursors) {
+          const velocity = 200;
+          this.player.setVelocity(0);
+
+          if (this.cursors.left.isDown) {
+            this.player.setVelocityX(-velocity);
+          } else if (this.cursors.right.isDown) {
+            this.player.setVelocityX(velocity);
+          }
+
+          if (this.cursors.up.isDown) {
+            this.player.setVelocityY(-velocity);
+          } else if (this.cursors.down.isDown) {
+            this.player.setVelocityY(velocity);
+          }
+
+          if (this.player.body.velocity.x !== 0 || this.player.body.velocity.y !== 0) {
+            this.socket.emit('playerMoved', { position: { x: this.player.x, y: this.player.y } });
+          }
+        }
+      }
+
+      addOtherPlayer(playerInfo, playerId) {
+        const otherPlayer = this.physics.add.sprite(playerInfo.x, playerInfo.y, 'player');
+        this.otherPlayers[playerId] = otherPlayer;
+      }
+
+      updatePlayerCount(count) {
+        document.getElementById('playerCount').innerText = `Players connected: ${count}`;
+      }
+    }
+
+    const config = {
+      type: Phaser.AUTO,
+      width: 800,
+      height: 600,
+      physics: {
+        default: 'arcade',
+        arcade: {
+          gravity: { y: 0 },
+          debug: false,
+        },
+      },
+      scene: [MenuScene, GameScene],
+    };
+
+    const game = new Phaser.Game(config);
+  </script>
+</body>
+</html>
